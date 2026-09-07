@@ -858,9 +858,145 @@
     return L.join('\n');
   }
 
+  /* Posts into a Google Form via a hidden iframe. A cross-origin form POST
+     can't be read back, so the iframe's load event is the only signal we
+     get — Google accepts or rejects it silently either way. */
+  let sent = false;
+
+  function sendOrder(btn) {
+    const nm = document.getElementById('fName').value.trim();
+    const ct = document.getElementById('fContact').value.trim();
+    if (!nm || !ct) {
+      say('Add your name and a phone or email first, so we can confirm.', true);
+      (nm ? document.getElementById('fContact') : document.getElementById('fName')).focus();
+      return;
+    }
+    if (sent) return;
+
+    const f = SHOP.form;
+    const { priced, ask } = totals();
+
+    const values = {
+      [f.fields.name]: nm,
+      [f.fields.contact]: ct,
+      [f.fields.items]: orderText(),
+      [f.fields.total]: (priced > 0 ? money(priced) : 'TBD') + (ask > 0 ? ' + ' + ask + ' TBD' : ''),
+      [f.fields.notes]: document.getElementById('fNotes').value.trim(),
+    };
+
+    let frame = document.getElementById('gfSink');
+    if (!frame) {
+      frame = document.createElement('iframe');
+      frame.id = 'gfSink';
+      frame.name = 'gfSink';
+      frame.hidden = true;
+      document.body.appendChild(frame);
+    }
+
+    const form = document.createElement('form');
+    form.action = f.action;
+    form.method = 'POST';
+    form.target = 'gfSink';
+    form.hidden = true;
+    for (const [k, v] of Object.entries(values)) {
+      if (!k || !v) continue;
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = k;
+      input.value = v;
+      form.appendChild(input);
+    }
+    document.body.appendChild(form);
+
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    say('');
+
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      form.remove();
+      if (ok) {
+        sent = true;
+        showSent(nm);
+      } else {
+        btn.disabled = false;
+        btn.textContent = 'Send order';
+        say('Couldn’t send just now — copy the order instead and text it over.', true);
+      }
+    };
+
+    frame.addEventListener('load', () => done(true), { once: true });
+    setTimeout(() => done(false), 12000);
+
+    form.submit();
+  }
+
+  function showSent(nm) {
+    document.getElementById('actions').textContent = '';
+    const box = document.getElementById('actions');
+
+    const h = document.createElement('p');
+    h.style.cssText = 'font-family:"Bodoni Moda",Georgia,serif;font-size:1.3rem;font-weight:700;margin:0 0 .3rem;';
+    h.textContent = 'Order sent, ' + nm.split(' ')[0] + '.';
+    const p = document.createElement('p');
+    p.style.cssText = 'color:var(--text-dim);font-size:.9rem;margin:0 0 1rem;';
+    p.textContent = 'We’ll get in touch to confirm your total and set up a pickup time.';
+
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'btn ghost';
+    copy.textContent = 'Keep a copy';
+    copy.addEventListener('click', () => copyOrder(copy));
+
+    box.append(h, p, copy);
+    say('');
+  }
+
+  async function copyOrder(btn) {
+    const text = orderText();
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
+      ta.remove();
+    }
+    say(ok ? 'Copied — paste it into a text or email.' : 'Couldn’t copy here. Screenshot this panel instead.', !ok);
+  }
+
+  function say(msg, bad) {
+    const el = document.getElementById('said');
+    el.textContent = msg;
+    el.style.color = bad ? 'var(--ember)' : 'var(--wyrm)';
+  }
+
   function paintActions() {
     const box = document.getElementById('actions');
     box.textContent = '';
+    say('');
+
+    if (sent) {
+      showSent(document.getElementById('fName').value.trim() || 'there');
+      return;
+    }
+
+    if (SHOP.form && SHOP.form.action && SHOP.form.fields) {
+      const send = document.createElement('button');
+      send.type = 'button';
+      send.className = 'btn';
+      send.textContent = 'Send order';
+      send.addEventListener('click', () => sendOrder(send));
+      box.appendChild(send);
+    }
 
     if (SHOP.sms) {
       const a = document.createElement('a');
@@ -890,30 +1026,12 @@
       box.appendChild(a);
     }
 
+    const secondary = box.childElementCount > 0;
     const copy = document.createElement('button');
     copy.type = 'button';
-    copy.className = 'btn' + (SHOP.sms || SHOP.email ? ' ghost' : '');
-    copy.textContent = 'Copy order to clipboard';
-    copy.addEventListener('click', async () => {
-      const text = orderText();
-      let ok = false;
-      try {
-        await navigator.clipboard.writeText(text);
-        ok = true;
-      } catch (e) {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
-        ta.remove();
-      }
-      document.getElementById('said').textContent = ok
-        ? 'Copied — paste it into a text or email.'
-        : 'Couldn’t copy here. Screenshot this panel instead.';
-    });
+    copy.className = 'btn' + (secondary ? ' ghost' : '');
+    copy.textContent = secondary ? 'Copy order instead' : 'Copy order to clipboard';
+    copy.addEventListener('click', () => copyOrder(copy));
     box.appendChild(copy);
   }
 
