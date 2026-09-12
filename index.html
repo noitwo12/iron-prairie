@@ -243,6 +243,12 @@
   }
   .choose:hover { background: var(--wyrm); color: var(--wyrm-ink); }
 
+  .chrows { display: grid; gap: .35rem; }
+  #chOpts .pickline { padding: .4rem .45rem .4rem .75rem; }
+  #chOpts .pickline .picklab { font-size: .95rem; }
+  #chOpts .pickline .stepper button { width: 2.4rem; height: 2.4rem; font-size: 1.25rem; }
+  #chOpts .pickline .qty { min-width: 1.6rem; font-size: 1rem; }
+
   .picked { display: grid; gap: .3rem; margin: .55rem 0 0; padding-left: 5.65rem; }
   .picked:empty { display: none; }
   .pickline {
@@ -530,10 +536,10 @@
   const hasOpts = (p) => Array.isArray(p.options) && p.options.length > 0;
   const configurable = (p) => hasSizes(p) || hasOpts(p);
 
-  /* A single choice list with one price can be laid out as one stepper per
-     choice, right on the card — the same +/- a plain product gets, once per
-     color. Two lists are combinations (13 dragons x 9 crystals), and per-size
-     prices need a size picked first, so both of those keep the chooser. */
+  /* A single choice list at one price gets a +/- per choice inside the
+     chooser, so several colors go on in one visit instead of pick-one-then-Add.
+     Two lists are combinations (13 dragons x 9 crystals) and per-size prices
+     need a size picked first, so both of those keep the pick-then-Add flow. */
   const choiceRows = (p) => hasOpts(p) && p.options.length === 1 && !hasSizes(p);
 
   /* One entry per distinct configuration: { p, size, unit, choices, qty } */
@@ -719,7 +725,7 @@
     else { pr.className = 'price ask'; pr.textContent = 'Ask for price'; }
     who.appendChild(pr);
 
-    if (hasOpts(p) && !choiceRows(p)) {
+    if (hasOpts(p)) {
       const os = document.createElement('p');
       os.className = 'optsum';
       os.textContent = p.options
@@ -767,20 +773,7 @@
 
     const mine = entriesFor(p);
 
-    if (choiceRows(p)) {
-      const g = p.options[0];
-      for (const c of g.choices) {
-        const line = document.createElement('div');
-        line.className = 'pickline';
-        const lab = document.createElement('span');
-        lab.className = 'picklab';
-        lab.textContent = c;
-        const choices = {};
-        choices[g.label] = c;
-        line.append(lab, stepperFor(p, null, choices));
-        picked.appendChild(line);
-      }
-    } else if (configurable(p)) {
+    if (configurable(p)) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'choose';
@@ -846,6 +839,7 @@
     else cart.set(key, { p, size, choices, unit: unitFor(p, size), qty: next });
     paintProduct(p);
     paintTally();
+    if (chooser.open && chProduct && chProduct.id === p.id) paintChooser();
   }
 
   /* ---------- chooser ---------- */
@@ -885,11 +879,60 @@
     const box = document.getElementById('chOpts');
     box.textContent = '';
 
-    if (hasSizes(p)) box.appendChild(pillGroup('Size', p.sizes.map((s) => s.label), 'size', p.sizes));
-    for (const g of (p.options || [])) box.appendChild(pillGroup(g.label, g.choices, g.label, null));
+    chSteps = [];
+    if (choiceRows(p)) {
+      box.appendChild(stepperGroup(p));
+    } else {
+      if (hasSizes(p)) box.appendChild(pillGroup('Size', p.sizes.map((s) => s.label), 'size', p.sizes));
+      for (const g of (p.options || [])) box.appendChild(pillGroup(g.label, g.choices, g.label, null));
+    }
 
     paintChooser();
     chooser.showModal();
+  }
+
+  /* Live handles into the dialog's steppers. Kept so a click updates the
+     numbers in place — re-rendering the rows would drop focus off the very
+     button being pressed. */
+  let chSteps = [];
+
+  function stepperGroup(p) {
+    const g = p.options[0];
+
+    const box = document.createElement('div');
+    box.className = 'optgroup';
+
+    const lab = document.createElement('span');
+    lab.className = 'optlabel';
+    lab.textContent = g.label;
+    box.appendChild(lab);
+
+    const list = document.createElement('div');
+    list.className = 'chrows';
+
+    for (const c of g.choices) {
+      const choices = {};
+      choices[g.label] = c;
+
+      const line = document.createElement('div');
+      line.className = 'pickline';
+      const name = document.createElement('span');
+      name.className = 'picklab';
+      name.textContent = c;
+
+      const step = stepperFor(p, null, choices);
+      line.append(name, step);
+      list.appendChild(line);
+
+      chSteps.push({
+        key: configKey(p, null, choices),
+        qty: step.querySelector('.qty'),
+        minus: step.querySelector('button'),
+      });
+    }
+
+    box.appendChild(list);
+    return box;
   }
 
   function pillGroup(label, choices, kind, priced) {
@@ -935,12 +978,20 @@
 
   function chReady() {
     if (!chProduct) return false;
+    if (choiceRows(chProduct)) return true;
     if (hasSizes(chProduct) && !chSel.size) return false;
     for (const g of (chProduct.options || [])) if (!chSel.choices[g.label]) return false;
     return true;
   }
 
   function paintChooser() {
+    for (const s of chSteps) {
+      const n = cart.has(s.key) ? cart.get(s.key).qty : 0;
+      s.qty.textContent = String(n);
+      s.qty.dataset.zero = n === 0 ? '1' : '0';
+      s.minus.disabled = n === 0;
+    }
+
     for (const b of document.querySelectorAll('#chOpts .pill')) {
       const picked = b.dataset.kind === 'size'
         ? chSel.size === b.dataset.value
@@ -967,12 +1018,17 @@
       el.appendChild(s);
     }
 
-    document.getElementById('chAdd').disabled = !chReady();
+    const add = document.getElementById('chAdd');
+    add.textContent = choiceRows(p) ? 'Done' : 'Add to order';
+    add.disabled = !chReady();
   }
 
   document.getElementById('chAdd').addEventListener('click', () => {
     if (!chReady()) return;
-    bump(chProduct, chSel.size, Object.assign({}, chSel.choices), 1);
+    /* The steppers already put these on the order; the button just dismisses. */
+    if (!choiceRows(chProduct)) {
+      bump(chProduct, chSel.size, Object.assign({}, chSel.choices), 1);
+    }
     chooser.close();
   });
 
